@@ -19,6 +19,7 @@
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
+#include "app.h"
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -97,9 +98,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  char b = 0;
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  app_step(b);
   }
   /* USER CODE END 3 */
 }
@@ -318,6 +321,18 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/** External function to update On-Range-Target indicator */
+void update_target_indicator(uint8_t on_range)
+{
+	// TODO Update LED
+}
+
+/** External function to update Active-GPS-Fix */
+void update_gps_fix(uint8_t active)
+{
+	// TODO Update LED
+}
 
 /* USER CODE END 4 */
 
