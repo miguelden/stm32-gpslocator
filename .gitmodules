@@ -1,0 +1,3 @@
+[submodule "import/GPSlocator"]
+	path = import/GPSlocator
+	url = git@github.com:miguelden/GPSlocator.git
