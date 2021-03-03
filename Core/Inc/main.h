@@ -70,15 +70,6 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
-/**
- * @brief  UART-DMA RX Transfer completed callback
- */
-void uart_read_dma_callback(void);
-
-/**
- * @brief   UART-DMA TX Transfer completed callback
- */
-void uart_dma_tx_complete_callback(void);
 
 /* USER CODE END EFP */
 

@@ -40,6 +40,12 @@ void MX_USART2_UART_Init(void);
 
 void MX_USART2_UART_Enable(void);
 
+void uart_read_dma_callback(void);
+void uart_dma_tx_complete_callback(void);
+
+uint8_t uart_read_data(uint8_t *b);
+
+
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

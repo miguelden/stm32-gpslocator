@@ -41,8 +41,6 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define DMA_RX_BUFFER_SIZE   1024UL
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -54,15 +52,8 @@
 
 /* USER CODE BEGIN PV */
 
-/** DMA UART RX Buffer */
-uint8_t dma_rx_buffer_[DMA_RX_BUFFER_SIZE];
-/** RX Buffer */
-uint8_t rx_buffer_[DMA_RX_BUFFER_SIZE];
-/** Rx Buffer Pointer. Last index to be read */
-uint32_t rx_buffer_end_ = 0;
-/** Rx Buffer Pointer. Next index to read. If it is equals to 'rx_buffer_end' -> nothing to read */
-uint32_t rx_buffer_0_ = 0;
-
+/** LED management. Last timestamp */
+uint16_t lts_;
 /** Target on range flag */
 uint8_t target_on_range_ = 0;
 /** GPS fix flag */
@@ -74,63 +65,12 @@ uint8_t gps_fix_ = 0;
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
+void led_management(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-
-/**
- * @brief  UART-DMA RX Transfer completed callback
- */
-void uart_read_dma_callback (
-
-)
-{
-    static size_t idma_0;
-    size_t idma_f;
-
-    /* Get idx in DMA circular buffer */
-    idma_f = DMA_RX_BUFFER_SIZE - LL_DMA_GetDataLength(DMA1, LL_DMA_STREAM_5);
-    if (idma_f != idma_0) {
-
-    	size_t sz = (DMA_RX_BUFFER_SIZE + idma_f - idma_0) % DMA_RX_BUFFER_SIZE;
-    	size_t capacity = (DMA_RX_BUFFER_SIZE - 1 + rx_buffer_0_ - rx_buffer_end_) % DMA_RX_BUFFER_SIZE;
-    	size_t last_idx = (idma_f == DMA_RX_BUFFER_SIZE) ? 0 : idma_f;
-
-    	if(sz < capacity) {
-
-            /* Linear reading */
-            if (idma_f > idma_0) {
-
-            	memcpy(&rx_buffer_[idma_0], &dma_rx_buffer_[idma_0], idma_f - idma_0);
-
-                /* Overflowed reading */
-            } else {
-                memcpy(&rx_buffer_[idma_0], &dma_rx_buffer_[idma_0], DMA_RX_BUFFER_SIZE - idma_0);
-                if (idma_f > 0) {
-                    memcpy(&rx_buffer_[0], &dma_rx_buffer_[0], idma_f);
-                }
-            }
-
-            /* Update last index to be read */
-            rx_buffer_end_ = last_idx;
-    	}
-
-        /* Save current index */
-        idma_0 = last_idx;
-    }
-}
-
-/**
- * @brief   UART-DMA TX Transfer completed callback
- */
-void uart_dma_tx_complete_callback (
-
-)
-{
-
-}
 
 
 /* USER CODE END 0 */
@@ -142,7 +82,7 @@ void uart_dma_tx_complete_callback (
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  uint16_t t0;
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -179,64 +119,34 @@ int main(void)
   MX_TIM10_Start();
 
   /* Set DMA RX buffer */
-  LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_5, (uint32_t)dma_rx_buffer_);
-  LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_5, DMA_RX_BUFFER_SIZE);
+
   MX_USART2_UART_Enable();
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  t0 = MX_TIM10_Get();
+
+  /* Initialize LED timestamp */
+  lts_ = MX_TIM10_Get();
+
   while (1)
   {
-    size_t rx_end = rx_buffer_end_;
-    uint16_t t1;
-    uint32_t dt;
+    uint8_t ret;
+    uint8_t b;
 
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
 
-    /*
-     * Read new character
-     */
-    if (rx_buffer_0_!=rx_end) {
-      app_step(rx_buffer_[rx_buffer_0_]);
-      rx_buffer_0_ = (rx_buffer_0_ + 1) % DMA_RX_BUFFER_SIZE;
+    /* Main APP Step */
+    ret = uart_read_data(&b);
+    if (ret) {
+      app_step(b);
     }
 
-
-    /*
-     * LED Management
-     * Period = 250ms -> 25000 cnt in TMR10
-     */
-
-    /* Get current time */
-    t1 = (uint16_t)MX_TIM10_Get();
-    dt = (0x10000UL - t0 + t1 + 1) & 0xFFFF;
-    if (dt > 2500) {
-
-      /* System LED (Red) */
-      LL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin);
-
-      /* GPS FIX LED (Blue) */
-      if (userif_get_gps_status()) {
-        LL_GPIO_TogglePin(LED_BLUE_GPIO_Port, LED_BLUE_Pin);
-      } else {
-      	LL_GPIO_ResetOutputPin(LED_BLUE_GPIO_Port, LED_BLUE_Pin);
-      }
-
-      /* TARGET On Range LED (Green) */
-      if (userif_get_target_reached()) {
-        LL_GPIO_TogglePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin);
-      } else {
-      	LL_GPIO_ResetOutputPin(LED_GREEN_GPIO_Port, LED_GREEN_Pin);
-      }
-
-      t0 = t1;
-
-    }
+    /* Update LEDs */
+    led_management();
 
   }
   /* USER CODE END 3 */
@@ -285,6 +195,50 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * @brief Update the LEDs values
+ * @param t0  Last timestamp when the LEDs were updated
+ */
+void led_management (
+
+)
+{
+	/* Period = 250ms -> 2500 cnt in TMR10 */
+	static const uint16_t period = 2500;
+
+    uint16_t t1;
+    uint32_t dt;
+
+    /* Get current time */
+    t1 = (uint16_t)MX_TIM10_Get();
+    /* Compute difference in the circular timer */
+    dt = (0x10000UL - lts_ + t1 + 1) & 0xFFFF;
+
+    if (dt > period) {
+
+      /* System LED (Red) */
+      LL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin);
+
+      /* GPS FIX LED (Blue) */
+      if (userif_get_gps_status()) {
+        LL_GPIO_TogglePin(LED_BLUE_GPIO_Port, LED_BLUE_Pin);
+      } else {
+      	LL_GPIO_ResetOutputPin(LED_BLUE_GPIO_Port, LED_BLUE_Pin);
+      }
+
+      /* TARGET On Range LED (Green) */
+      if (userif_get_target_reached()) {
+        LL_GPIO_TogglePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin);
+      } else {
+      	LL_GPIO_ResetOutputPin(LED_GREEN_GPIO_Port, LED_GREEN_Pin);
+      }
+
+      /* Save timer */
+      lts_ = t1;
+    }
+}
+
 
 /* USER CODE END 4 */
 
