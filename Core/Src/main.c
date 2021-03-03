@@ -20,12 +20,17 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdint.h>
+#include <string.h>
+#include "app.h"
+#include "userif.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,6 +40,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define DMA_RX_BUFFER_SIZE   1024UL
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,6 +53,20 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+
+/** DMA UART RX Buffer */
+uint8_t dma_rx_buffer_[DMA_RX_BUFFER_SIZE];
+/** RX Buffer */
+uint8_t rx_buffer_[DMA_RX_BUFFER_SIZE];
+/** Rx Buffer Pointer. Last index to be read */
+uint32_t rx_buffer_end_ = 0;
+/** Rx Buffer Pointer. Next index to read. If it is equals to 'rx_buffer_end' -> nothing to read */
+uint32_t rx_buffer_0_ = 0;
+
+/** Target on range flag */
+uint8_t target_on_range_ = 0;
+/** GPS fix flag */
+uint8_t gps_fix_ = 0;
 
 /* USER CODE END PV */
 
@@ -57,6 +79,60 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+
+/**
+ * @brief  UART-DMA RX Transfer completed callback
+ */
+void uart_read_dma_callback (
+
+)
+{
+    static size_t idma_0;
+    size_t idma_f;
+
+    /* Get idx in DMA circular buffer */
+    idma_f = DMA_RX_BUFFER_SIZE - LL_DMA_GetDataLength(DMA1, LL_DMA_STREAM_5);
+    if (idma_f != idma_0) {
+
+    	size_t sz = (DMA_RX_BUFFER_SIZE + idma_f - idma_0) % DMA_RX_BUFFER_SIZE;
+    	size_t capacity = (DMA_RX_BUFFER_SIZE - 1 + rx_buffer_0_ - rx_buffer_end_) % DMA_RX_BUFFER_SIZE;
+    	size_t last_idx = (idma_f == DMA_RX_BUFFER_SIZE) ? 0 : idma_f;
+
+    	if(sz < capacity) {
+
+            /* Linear reading */
+            if (idma_f > idma_0) {
+
+            	memcpy(&rx_buffer_[idma_0], &dma_rx_buffer_[idma_0], idma_f - idma_0);
+
+                /* Overflowed reading */
+            } else {
+                memcpy(&rx_buffer_[idma_0], &dma_rx_buffer_[idma_0], DMA_RX_BUFFER_SIZE - idma_0);
+                if (idma_f > 0) {
+                    memcpy(&rx_buffer_[0], &dma_rx_buffer_[0], idma_f);
+                }
+            }
+
+            /* Update last index to be read */
+            rx_buffer_end_ = last_idx;
+    	}
+
+        /* Save current index */
+        idma_0 = last_idx;
+    }
+}
+
+/**
+ * @brief   UART-DMA TX Transfer completed callback
+ */
+void uart_dma_tx_complete_callback (
+
+)
+{
+
+}
+
+
 /* USER CODE END 0 */
 
 /**
@@ -66,13 +142,20 @@ void SystemClock_Config(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+  uint16_t t0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+  
+
+  LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_SYSCFG);
+  LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_PWR);
+
+  NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_0);
+
+  /* System interrupt init*/
 
   /* USER CODE BEGIN Init */
 
@@ -87,20 +170,74 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
+  MX_TIM10_Init();
   /* USER CODE BEGIN 2 */
+
+  /* Start timer */
+  MX_TIM10_Start();
+
+  /* Set DMA RX buffer */
+  LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_5, (uint32_t)dma_rx_buffer_);
+  LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_5, DMA_RX_BUFFER_SIZE);
+  MX_USART2_UART_Enable();
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  t0 = MX_TIM10_Get();
   while (1)
   {
-	  char b = 0;
+    size_t rx_end = rx_buffer_end_;
+    uint16_t t1;
+    uint32_t dt;
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  app_step(b);
+
+    /*
+     * Read new character
+     */
+    if (rx_buffer_0_!=rx_end) {
+      app_step(rx_buffer_[rx_buffer_0_]);
+      rx_buffer_0_ = (rx_buffer_0_ + 1) % DMA_RX_BUFFER_SIZE;
+    }
+
+
+    /*
+     * LED Management
+     * Period = 250ms -> 25000 cnt in TMR10
+     */
+
+    /* Get current time */
+    t1 = (uint16_t)MX_TIM10_Get();
+    dt = (0x10000UL - t0 + t1 + 1) & 0xFFFF;
+    if (dt > 2500) {
+
+      /* System LED (Red) */
+      LL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin);
+
+      /* GPS FIX LED (Blue) */
+      if (userif_get_gps_status()) {
+        LL_GPIO_TogglePin(LED_BLUE_GPIO_Port, LED_BLUE_Pin);
+      } else {
+      	LL_GPIO_ResetOutputPin(LED_BLUE_GPIO_Port, LED_BLUE_Pin);
+      }
+
+      /* TARGET On Range LED (Green) */
+      if (userif_get_target_reached()) {
+        LL_GPIO_TogglePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin);
+      } else {
+      	LL_GPIO_ResetOutputPin(LED_GREEN_GPIO_Port, LED_GREEN_Pin);
+      }
+
+      t0 = t1;
+
+    }
+
   }
   /* USER CODE END 3 */
 }
@@ -111,55 +248,43 @@ int main(void)
   */
 void SystemClock_Config(void)
 {
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  LL_FLASH_SetLatency(LL_FLASH_LATENCY_5);
 
-  /** Configure the main internal regulator output voltage 
-  */
-  __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-  /** Initializes the CPU, AHB and APB busses clocks 
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 4;
-  RCC_OscInitStruct.PLL.PLLN = 168;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 7;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  if(LL_FLASH_GetLatency() != LL_FLASH_LATENCY_5)
   {
-    Error_Handler();
+  Error_Handler();  
   }
-  /** Initializes the CPU, AHB and APB busses clocks 
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+  LL_PWR_SetRegulVoltageScaling(LL_PWR_REGU_VOLTAGE_SCALE1);
+  LL_RCC_HSE_Enable();
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
+   /* Wait till HSE is ready */
+  while(LL_RCC_HSE_IsReady() != 1)
   {
-    Error_Handler();
+    
   }
+  LL_RCC_PLL_ConfigDomain_SYS(LL_RCC_PLLSOURCE_HSE, LL_RCC_PLLM_DIV_4, 168, LL_RCC_PLLP_DIV_2);
+  LL_RCC_PLL_Enable();
+
+   /* Wait till PLL is ready */
+  while(LL_RCC_PLL_IsReady() != 1)
+  {
+    
+  }
+  LL_RCC_SetAHBPrescaler(LL_RCC_SYSCLK_DIV_1);
+  LL_RCC_SetAPB1Prescaler(LL_RCC_APB1_DIV_4);
+  LL_RCC_SetAPB2Prescaler(LL_RCC_APB2_DIV_2);
+  LL_RCC_SetSysClkSource(LL_RCC_SYS_CLKSOURCE_PLL);
+
+   /* Wait till System clock is ready */
+  while(LL_RCC_GetSysClkSource() != LL_RCC_SYS_CLKSOURCE_STATUS_PLL)
+  {
+  
+  }
+  LL_Init1msTick(168000000);
+  LL_SetSystemCoreClock(168000000);
 }
 
 /* USER CODE BEGIN 4 */
-
-/** External function to update On-Range-Target indicator */
-void update_target_indicator(uint8_t on_range)
-{
-	// TODO Update LED
-}
-
-/** External function to update Active-GPS-Fix */
-void update_gps_fix(uint8_t active)
-{
-	// TODO Update LED
-}
 
 /* USER CODE END 4 */
 
